@@ -10,8 +10,6 @@ A simple YouTube downloader GUI application using Tkinter and Pytube.
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
 - [Usage](#usage)
-- [Contributing](#contributing)
-- [License](#license)
 
 ## Overview
 
@@ -33,19 +31,13 @@ Make sure you have the following installed on your system:
 
 ### Installation
 
-1. Clone the repository:
+  1. Clone the repository:
+  
+     ```bash
+     git clone https://github.com/phantom-kali/YTDownloader.git
+     ```
 
-   ```bash
-   git clone https://github.com/your-username/youtube-downloader.git
-   ```
-   
-2. Navigate to the project directory:
-
-  ```bash
-
-cd youtube-downloader
-  ```
-3. Install the required dependencies:
+2. Install the required dependencies:
 
 ```bash
 
@@ -58,7 +50,7 @@ cd youtube-downloader
 
 ```bash
 
-python main.py
+python youtube_downloader.py
 ```
 
 Enter the YouTube video link in the provided input field.
