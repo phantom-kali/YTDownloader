@@ -28,7 +28,7 @@ This YouTube downloader is a graphical user interface (GUI) application built wi
 Make sure you have the following installed on your system:
 
 - Python (3.6 or higher)
-
+ 
 ### Installation
 
   1. Clone the repository:
@@ -46,7 +46,6 @@ Make sure you have the following installed on your system:
 
 ###Usage
 
-    Run the application:
 
 ```bash
 
