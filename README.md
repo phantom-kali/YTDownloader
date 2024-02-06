@@ -39,18 +39,17 @@ Make sure you have the following installed on your system:
 
 2. Install the required dependencies:
 
-```bash
+    ```bash
 
     pip install -r requirements.txt
-```
+    ```
 
 ###Usage
 
-
-```bash
+    ```bash
 
 python youtube_downloader.py
-```
+    ```
 
 Enter the YouTube video link in the provided input field.
 
