@@ -48,7 +48,7 @@ Make sure you have the following installed on your system:
    ```bash
 
     python youtube_downloader.py
-    ```
+   ```
 
 Enter the YouTube video link in the provided input field.
 
