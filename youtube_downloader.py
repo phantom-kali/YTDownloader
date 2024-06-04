@@ -154,6 +154,8 @@ class YouTubeDownloader(tk.Tk):
         video_button = ttk.Button(options, text="Video", command=lambda: self.download_video(video, audio=False, options=options, frame=frame))
         video_button.pack(side=tk.LEFT, padx=5)
 
+        frame.video_url = video.watch_url
+
     def download_video(self, video, audio=False, options=None, frame=None):
         if options:
             options.destroy()
@@ -171,7 +173,7 @@ class YouTubeDownloader(tk.Tk):
             percentage = (bytes_downloaded / total_size) * 100
             progress_var.set(percentage)
 
-        video_url = frame.master.video_url  # Get video URL from frame's metadata
+        video_url = frame.video_url  # Get video URL from frame's metadata
 
         try:
             yt = YouTube(video_url, on_progress_callback=update_progress)
