@@ -1,136 +1,213 @@
 import tkinter as tk
-from tkinter import ttk, Entry, Label
-from pytube import YouTube
-from pathlib import Path
-from threading import Thread
+from tkinter import ttk, filedialog, messagebox
+from pytube import YouTube, Search
+from PIL import Image, ImageTk
+import requests
+import io
+import threading
 import platform
 import os
+from pathlib import Path
 
 os_type = platform.system()
 
-downloads_path = ""  # Define downloads_path as a global variable
-new_name = ""  # Define new_name as a global variable
+class YouTubeDownloader(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("YouTube Downloader")
+        self.geometry("800x600")
+        self.configure(bg="#ffffff")
 
-def video_downloader():
-    global downloads_path, new_name  # Use the global variables
+        self.style = ttk.Style(self)
+        self.quality_var = tk.StringVar(value="720p")
+        self.theme_var = tk.StringVar(value="Light")
+        self.download_location = tk.StringVar(value=str(Path.home() / 'Downloads/YouTube'))
 
-    url = link_entry.get().strip()
+        self.create_widgets()
+        self.create_menu()
+        self.current_options_frame = None  # Track the current download options frame
 
-    if not url:
-        status_label.config(text="Please enter a YouTube link.", fg="red", font=16)
-        return
+    def create_widgets(self):
+        # Search bar
+        self.search_var = tk.StringVar()
+        search_frame = ttk.Frame(self, padding="10")
+        search_frame.pack(fill=tk.X)
 
-    downloads_path = str(Path.home() / 'Videos/YouTube')
-    video = YouTube(url)
-    name = video.title
-    name = name.replace('\\', '').replace('/', '')
+        # YouTube-like search bar style
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=70)
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        self.search_entry.bind("<Return>", lambda event: self.search_videos())
 
-    new_name = f'{name}.mp4'
+        self.search_button = ttk.Button(search_frame, text="Search", command=self.search_videos)
+        self.search_button.pack(side=tk.RIGHT)
 
-    # Update status label before download
-    status_label.config(text="Downloading Video...", fg="green", font=16)
+        # Results frame with scrollbar
+        self.canvas = tk.Canvas(self)
+        self.results_frame = ttk.Frame(self.canvas)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
-    def download_video():
-        global downloads_path, new_name  # Use the global variables
-        video.streams.get_highest_resolution().download(filename=new_name, output_path=downloads_path)
-        status_label.config(text=f"Downloaded: {new_name}")
-        open_button.config(state=tk.NORMAL)  # Enable the open button
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas.create_window((0, 0), window=self.results_frame, anchor="nw")
 
-    # Run download in a separate thread to avoid GUI freezing
-    download_thread = Thread(target=download_video)
-    download_thread.start()
+        self.results_frame.bind("<Configure>", lambda event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
 
-def audio_downloader():
-    global downloads_path, new_name  # Use the global variables
+    def create_menu(self):
+        self.menu = tk.Menu(self)
+        self.config(menu=self.menu)
 
-    url = link_entry.get().strip()
+        settings_menu = tk.Menu(self.menu, tearoff=0)
+        self.menu.add_cascade(label="Settings", menu=settings_menu)
 
-    if not url:
-        status_label.config(text="Please enter a YouTube link.", fg="red", font=16)
-        return
+        theme_menu = tk.Menu(settings_menu, tearoff=0)
+        settings_menu.add_cascade(label="Theme", menu=theme_menu)
+        theme_menu.add_command(label="Light", command=lambda: self.change_theme("Light"))
+        theme_menu.add_command(label="Dark", command=lambda: self.change_theme("Dark"))
 
-    downloads_path = str(Path.home() / 'Music/YouTube')
-    video = YouTube(url)
-    name = video.title
-    name = name.replace('\\', '').replace('/', '')
+        quality_menu = tk.Menu(settings_menu, tearoff=0)
+        settings_menu.add_cascade(label="Video Quality", menu=quality_menu)
+        qualities = ["1080p", "720p", "480p", "360p", "240p"]
+        for quality in qualities:
+            quality_menu.add_command(label=quality, command=lambda q=quality: self.set_quality(q))
 
-    new_name = f'{name}.mp3'
+        settings_menu.add_command(label="Set Download Location", command=self.set_download_location)
 
-    # Update status label before download
-    status_label.config(text="Downloading Audio...", fg="green", font=16)
+    def change_theme(self, theme):
+        self.theme_var.set(theme)
+        if theme == "Dark":
+            self.configure(bg="#1e1e1e")
+            self.style.configure("TFrame", background="#1e1e1e")
+            self.style.configure("TLabel", background="#1e1e1e", foreground="#ffffff")
+            self.style.configure("TButton", background="#333333", foreground="#ffffff")
+        else:
+            self.configure(bg="#ffffff")
+            self.style.configure("TFrame", background="#ffffff")
+            self.style.configure("TLabel", background="#ffffff", foreground="#000000")
+            self.style.configure("TButton", background="#ffffff", foreground="#000000")
 
-    def download_audio():
-        global downloads_path, new_name  # Use the global variables
-        video.streams.get_audio_only().download(filename=new_name, output_path=downloads_path)
-        status_label.config(text=f"Downloaded: {new_name}")
-        open_button.config(state=tk.NORMAL)  # Enable the open button
+    def set_quality(self, quality):
+        self.quality_var.set(quality)
 
-    # Run download in a separate thread to avoid GUI freezing
-    download_thread = Thread(target=download_audio)
-    download_thread.start()
+    def set_download_location(self):
+        directory = filedialog.askdirectory()
+        if directory:
+            self.download_location.set(directory)
 
-def open_file():
-    global downloads_path, new_name  # Use the global variables
+    def search_videos(self):
+        query = self.search_var.get()
+        threading.Thread(target=self.search_thread, args=(query,)).start()
 
-    if not downloads_path or not new_name:
-        status_label.config(text="No file has been downloaded yet.", fg="red", font=16)
-        return
-
-    # Get the path of the downloaded file
-    file_path = os.path.join(downloads_path, new_name)
-
-    # Open the file using the default system application
-    if os_type.lower() == "linux":
-        try:    
-            os.system(f"xdg-open '{file_path}'")
-        except:
-            pass
-    elif os_type.lower() == "windows":
+    def search_thread(self, query):
+        self.search_button.config(text="Loading...", state="disabled")
         try:
-            os.system(f"start '{file_path}'")
-        except:
-            pass
+            search = Search(query)
+            self.display_results(search.results)
+        finally:
+            self.search_button.config(text="Search", state="normal")
 
-# GUI setup
-root = tk.Tk()
-root.title("YouTube Downloader")
-root.resizable(False, False)  # Set resizable to False
+    def display_results(self, results):
+        for widget in self.results_frame.winfo_children():
+            widget.destroy()
 
-# Set dark background color for the window
-root.configure(bg="#333333")
+        for video in results:
+            frame = ttk.Frame(self.results_frame)
+            frame.pack(fill=tk.X, padx=20, pady=10)
 
-# Create a ttk style for rounded buttons with dark colors
-style = ttk.Style()
-style.configure("Rounded.TButton",
-                borderwidth=1,
-                relief="flat",
-                foreground="white",
-                background="#00008B",  # Dark blue color
-                font=('Helvetica', 10, 'bold'),
-                highlightbackground="#00004B",  # Adjust this to a darker shade
-                highlightcolor="#00004B")  # Adjust this to a darker shade
+            # Thumbnail
+            thumbnail_url = video.thumbnail_url
+            response = requests.get(thumbnail_url)
+            img_data = response.content
+            img = Image.open(io.BytesIO(img_data))
+            img = img.resize((120, 90), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
 
-# Link Entry
-link_label = Label(root, text="Enter YouTube Link:", bg="#333333", fg="white")
-link_label.pack(pady=5)
+            thumbnail_label = ttk.Label(frame, image=photo)
+            thumbnail_label.image = photo  # keep a reference
+            thumbnail_label.pack(side=tk.LEFT)
 
-link_entry = Entry(root, width=50, font=('Helvetica', 10), borderwidth=5, relief="groove")
-link_entry.pack(pady=5)
+            # Meta-data
+            meta_frame = ttk.Frame(frame)
+            meta_frame.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+            title_label = ttk.Label(meta_frame, text=video.title, wraplength=400)
+            title_label.pack(anchor=tk.W, fill=tk.X, expand=True)
 
-# Video Download Button
-video_button = ttk.Button(root, text="Download Video", command=video_downloader, style="Rounded.TButton")
-video_button.pack(pady=10)
+            # Fixed position download button
+            download_button = ttk.Button(meta_frame, text="Download", command=lambda v=video, f=frame: self.download_options(v, f))
+            download_button.pack(anchor=tk.E)
 
-# Audio Download Button
-audio_button = ttk.Button(root, text="Download Audio", command=audio_downloader, style="Rounded.TButton")
-audio_button.pack(pady=10)
+            # Store video URL in metadata
+            meta_frame.video_url = video.watch_url
 
-# Open Button
-open_button = ttk.Button(root, text="Open Downloaded File", command=open_file, state=tk.DISABLED, style="Rounded.TButton")
-open_button.pack(pady=10)
+    def download_options(self, video, frame):
+        # Close the previous options frame if any
+        if self.current_options_frame:
+            self.current_options_frame.destroy()
 
-# Status Label
-status_label = Label(root, text="", bg="#333333", fg="white")
-status_label.pack(pady=10)
+        options = ttk.Frame(frame)
+        options.pack(anchor=tk.E)
+        self.current_options_frame = options  # Track the current options frame
 
-root.mainloop()
+        audio_button = ttk.Button(options, text="Audio", command=lambda: self.download_video(video, audio=True, options=options, frame=frame))
+        audio_button.pack(side=tk.LEFT, padx=5)
+
+        video_button = ttk.Button(options, text="Video", command=lambda: self.download_video(video, audio=False, options=options, frame=frame))
+        video_button.pack(side=tk.LEFT, padx=5)
+
+    def download_video(self, video, audio=False, options=None, frame=None):
+        if options:
+            options.destroy()
+            self.current_options_frame = None  # Reset current options frame
+        threading.Thread(target=self.download_thread, args=(video, audio, frame)).start()
+
+    def download_thread(self, video, audio, frame):
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(frame, variable=progress_var, maximum=100)
+        progress_bar.pack(fill=tk.X, padx=5, pady=5)
+
+        def update_progress(stream, chunk, bytes_remaining):
+            total_size = stream.filesize
+            bytes_downloaded = total_size - bytes_remaining
+            percentage = (bytes_downloaded / total_size) * 100
+            progress_var.set(percentage)
+
+        video_url = frame.master.video_url  # Get video URL from frame's metadata
+
+        try:
+            yt = YouTube(video_url, on_progress_callback=update_progress)
+            if audio:
+                self.audio_downloader(yt, progress_var)
+            else:
+                self.video_downloader(yt, progress_var)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def audio_downloader(self, yt, progress_var):
+        downloads_path = self.download_location.get()
+        name = yt.title
+        name = name.replace('\\', '').replace('/', '')
+        new_name = f'{name}.mp3'
+
+        def download_audio():
+            yt.streams.get_audio_only().download(filename=new_name, output_path=downloads_path)
+            messagebox.showinfo("Download Complete", f"Downloaded: {new_name}")
+
+        download_thread = threading.Thread(target=download_audio)
+        download_thread.start()
+
+    def video_downloader(self, yt, progress_var):
+        downloads_path = self.download_location.get()
+        name = yt.title
+        name = name.replace('\\', '').replace('/', '')
+        new_name = f'{name}.mp4'
+
+        def download_video():
+            yt.streams.get_highest_resolution().download(filename=new_name, output_path=downloads_path)
+            messagebox.showinfo("Download Complete", f"Downloaded: {new_name}")
+
+        download_thread = threading.Thread(target=download_video)
+        download_thread.start()
+
+if __name__ == "__main__":
+    app = YouTubeDownloader()
+    app.mainloop()
