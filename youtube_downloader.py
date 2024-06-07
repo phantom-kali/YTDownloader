@@ -1,215 +1,283 @@
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+import sys
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QScrollArea, QFileDialog, QProgressBar, QMenu,
+    QMenuBar, QMessageBox
+)
+from PyQt6.QtGui import QPixmap, QAction
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from pytube import YouTube, Search
-from PIL import Image, ImageTk
+from PIL import Image
 import requests
 import io
-import threading
 import platform
-import os
 from pathlib import Path
+import os
 
 os_type = platform.system()
 
-class YouTubeDownloader(tk.Tk):
+class YouTubeDownloader(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.title("YouTube Downloader")
-        self.geometry("800x600")
-        self.configure(bg="#ffffff")
+        self.setWindowTitle("YouTube Downloader")
+        self.setGeometry(100, 100, 800, 600)
 
-        self.style = ttk.Style(self)
-        self.quality_var = tk.StringVar(value="720p")
-        self.theme_var = tk.StringVar(value="Light")
-        self.download_location = tk.StringVar(value=str(Path.home() / 'Downloads/YouTube'))
+        self.quality = "720p"
+        self.theme = "Light"
+        self.download_location = str(Path.home() / 'Downloads/YouTube')
 
-        self.create_widgets()
+        self.initUI()
         self.create_menu()
-        self.current_options_frame = None  # Track the current download options frame
 
-    def create_widgets(self):
-        # Search bar
-        self.search_var = tk.StringVar()
-        search_frame = ttk.Frame(self, padding="10")
-        search_frame.pack(fill=tk.X)
+        self.search_thread = None
+        self.download_threads = []
+        self.thumbnail_threads = []
+        self.current_progress_bars = {}  # Dictionary to keep track of progress bars by frame
 
-        # YouTube-like search bar style
-        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=70)
-        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        self.search_entry.bind("<Return>", lambda event: self.search_videos())
+    def initUI(self):
+        central_widget = QWidget(self)
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
 
-        self.search_button = ttk.Button(search_frame, text="Search", command=self.search_videos)
-        self.search_button.pack(side=tk.RIGHT)
+        search_layout = QHBoxLayout()
+        self.search_bar = QLineEdit(self)
+        self.search_bar.setPlaceholderText("Search YouTube")
+        self.search_bar.returnPressed.connect(self.search_videos)
+        search_layout.addWidget(self.search_bar)
 
-        # Results frame with scrollbar
-        self.canvas = tk.Canvas(self)
-        self.results_frame = ttk.Frame(self.canvas)
-        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.search_button = QPushButton("Search", self)
+        self.search_button.clicked.connect(self.search_videos)
+        search_layout.addWidget(self.search_button)
+        layout.addLayout(search_layout)
 
-        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.canvas.pack(fill=tk.BOTH, expand=True)
-        self.canvas.create_window((0, 0), window=self.results_frame, anchor="nw")
-
-        self.results_frame.bind("<Configure>", lambda event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.results_widget = QWidget()
+        self.results_layout = QVBoxLayout(self.results_widget)
+        self.scroll_area.setWidget(self.results_widget)
+        layout.addWidget(self.scroll_area)
 
     def create_menu(self):
-        self.menu = tk.Menu(self)
-        self.config(menu=self.menu)
+        menu_bar = self.menuBar()
+        settings_menu = menu_bar.addMenu("Settings")
 
-        settings_menu = tk.Menu(self.menu, tearoff=0)
-        self.menu.add_cascade(label="Settings", menu=settings_menu)
+        theme_menu = QMenu("Theme", self)
+        light_action = QAction("Light", self)
+        dark_action = QAction("Dark", self)
+        light_action.triggered.connect(lambda: self.change_theme("Light"))
+        dark_action.triggered.connect(lambda: self.change_theme("Dark"))
+        theme_menu.addAction(light_action)
+        theme_menu.addAction(dark_action)
 
-        theme_menu = tk.Menu(settings_menu, tearoff=0)
-        settings_menu.add_cascade(label="Theme", menu=theme_menu)
-        theme_menu.add_command(label="Light", command=lambda: self.change_theme("Light"))
-        theme_menu.add_command(label="Dark", command=lambda: self.change_theme("Dark"))
-
-        quality_menu = tk.Menu(settings_menu, tearoff=0)
-        settings_menu.add_cascade(label="Video Quality", menu=quality_menu)
+        quality_menu = QMenu("Video Quality", self)
         qualities = ["1080p", "720p", "480p", "360p", "240p"]
         for quality in qualities:
-            quality_menu.add_command(label=quality, command=lambda q=quality: self.set_quality(q))
+            action = QAction(quality, self)
+            action.triggered.connect(lambda checked, q=quality: self.set_quality(q))
+            quality_menu.addAction(action)
 
-        settings_menu.add_command(label="Set Download Location", command=self.set_download_location)
+        download_location_action = QAction("Set Download Location", self)
+        download_location_action.triggered.connect(self.set_download_location)
+
+        settings_menu.addMenu(theme_menu)
+        settings_menu.addMenu(quality_menu)
+        settings_menu.addAction(download_location_action)
 
     def change_theme(self, theme):
-        self.theme_var.set(theme)
+        self.theme = theme
         if theme == "Dark":
-            self.configure(bg="#1e1e1e")
-            self.style.configure("TFrame", background="#1e1e1e")
-            self.style.configure("TLabel", background="#1e1e1e", foreground="#ffffff")
-            self.style.configure("TButton", background="#333333", foreground="#ffffff")
+            self.setStyleSheet("background-color: #1e1e1e; color: #ffffff;")
         else:
-            self.configure(bg="#ffffff")
-            self.style.configure("TFrame", background="#ffffff")
-            self.style.configure("TLabel", background="#ffffff", foreground="#000000")
-            self.style.configure("TButton", background="#ffffff", foreground="#000000")
+            self.setStyleSheet("")
 
     def set_quality(self, quality):
-        self.quality_var.set(quality)
+        self.quality = quality
 
     def set_download_location(self):
-        directory = filedialog.askdirectory()
+        directory = QFileDialog.getExistingDirectory(self, "Select Download Location")
         if directory:
-            self.download_location.set(directory)
+            self.download_location = directory
 
     def search_videos(self):
-        query = self.search_var.get()
-        threading.Thread(target=self.search_thread, args=(query,)).start()
+        query = self.search_bar.text()
+        self.search_button.setText("Loading...")
+        self.search_button.setEnabled(False)
+        self.results_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-    def search_thread(self, query):
-        self.search_button.config(text="Loading...", state="disabled")
-        try:
-            search = Search(query)
-            self.display_results(search.results)
-        finally:
-            self.search_button.config(text="Search", state="normal")
+        if self.search_thread and self.search_thread.isRunning():
+            self.search_thread.terminate()
+            self.search_thread.wait()
 
-    def display_results(self, results):
-        for widget in self.results_frame.winfo_children():
-            widget.destroy()
+        self.search_thread = SearchThread(query)
+        self.search_thread.results_found.connect(self.display_result)
+        self.search_thread.finished.connect(lambda: self.search_button.setText("Search"))
+        self.search_thread.finished.connect(lambda: self.search_button.setEnabled(True))
+        self.search_thread.start()
 
-        for video in results:
-            frame = ttk.Frame(self.results_frame)
-            frame.pack(fill=tk.X, padx=20, pady=10)
+    def display_result(self, video):
+        frame = QWidget()
+        layout = QHBoxLayout(frame)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        thumbnail_thread = ThumbnailThread(video.thumbnail_url)
+        thumbnail_thread.finished.connect(lambda img_data, f=frame, v=video: self.add_video_frame(img_data, f, v))
+        thumbnail_thread.start()
+        self.thumbnail_threads.append(thumbnail_thread)
 
-            # Thumbnail
-            thumbnail_url = video.thumbnail_url
-            response = requests.get(thumbnail_url)
-            img_data = response.content
-            img = Image.open(io.BytesIO(img_data))
-            img = img.resize((120, 90), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
+    def add_video_frame(self, img_data, frame, video):
+        img = Image.open(io.BytesIO(img_data))
+        img = img.resize((120, 90), Image.Resampling.LANCZOS)
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format='PNG')
+        pixmap = QPixmap()
+        pixmap.loadFromData(img_byte_arr.getvalue())
 
-            thumbnail_label = ttk.Label(frame, image=photo)
-            thumbnail_label.image = photo  # keep a reference
-            thumbnail_label.pack(side=tk.LEFT)
+        thumbnail_label = QLabel()
+        thumbnail_label.setPixmap(pixmap)
+        layout = frame.layout()
+        layout.addWidget(thumbnail_label)
 
-            # Meta-data
-            meta_frame = ttk.Frame(frame)
-            meta_frame.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
-            title_label = ttk.Label(meta_frame, text=video.title, wraplength=400)
-            title_label.pack(anchor=tk.W, fill=tk.X, expand=True)
+        meta_layout = QVBoxLayout()
+        title_label = QLabel(video.title)
+        title_label.setWordWrap(True)
+        meta_layout.addWidget(title_label)
+        meta_layout.setSpacing(10)
 
-            # Fixed position download button
-            download_button = ttk.Button(meta_frame, text="Download", command=lambda v=video, f=frame: self.download_options(v, f))
-            download_button.pack(anchor=tk.E)
+        download_button = QPushButton("Download")
+        download_button.setFixedWidth(100)
+        download_button.clicked.connect(lambda checked, v=video, f=frame, b=download_button: self.download_options(v, f, b))
+        meta_layout.addWidget(download_button)
 
-            # Store video URL in metadata
-            meta_frame.video_url = video.watch_url
+        layout.addLayout(meta_layout)
+        self.results_layout.addWidget(frame)
 
-    def download_options(self, video, frame):
-        # Close the previous options frame if any
-        if self.current_options_frame:
-            self.current_options_frame.destroy()
+    def download_options(self, video, frame, download_button):
+        # Remove download button
+        layout = frame.layout()
+        meta_layout = layout.itemAt(1).layout()
+        meta_layout.removeWidget(download_button)
+        download_button.deleteLater()
 
-        options = ttk.Frame(frame)
-        options.pack(anchor=tk.E)
-        self.current_options_frame = options  # Track the current options frame
+        # Create progress bar immediately after selection
+        progress_bar = QProgressBar()
+        progress_bar.setValue(0)
+        layout.addWidget(progress_bar)
+        self.current_progress_bars[frame] = progress_bar
 
-        audio_button = ttk.Button(options, text="Audio", command=lambda: self.download_video(video, audio=True, options=options, frame=frame))
-        audio_button.pack(side=tk.LEFT, padx=5)
-
-        video_button = ttk.Button(options, text="Video", command=lambda: self.download_video(video, audio=False, options=options, frame=frame))
-        video_button.pack(side=tk.LEFT, padx=5)
-
-        frame.video_url = video.watch_url
-
-    def download_video(self, video, audio=False, options=None, frame=None):
-        if options:
-            options.destroy()
-            self.current_options_frame = None  # Reset current options frame
-        threading.Thread(target=self.download_thread, args=(video, audio, frame)).start()
-
-    def download_thread(self, video, audio, frame):
-        progress_var = tk.DoubleVar()
-        progress_bar = ttk.Progressbar(frame, variable=progress_var, maximum=100)
-        progress_bar.pack(fill=tk.X, padx=5, pady=5)
-
-        def update_progress(stream, chunk, bytes_remaining):
-            total_size = stream.filesize
-            bytes_downloaded = total_size - bytes_remaining
-            percentage = (bytes_downloaded / total_size) * 100
-            progress_var.set(percentage)
-
-        video_url = frame.video_url  # Get video URL from frame's metadata
-
-        try:
-            yt = YouTube(video_url, on_progress_callback=update_progress)
-            if audio:
-                self.audio_downloader(yt, progress_var)
-            else:
-                self.video_downloader(yt, progress_var)
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-
-    def audio_downloader(self, yt, progress_var):
-        downloads_path = self.download_location.get()
-        name = yt.title
-        name = name.replace('\\', '').replace('/', '')
-        new_name = f'{name}.mp3'
-
-        def download_audio():
-            yt.streams.get_audio_only().download(filename=new_name, output_path=downloads_path)
-            messagebox.showinfo("Download Complete", f"Downloaded: {new_name}")
-
-        download_thread = threading.Thread(target=download_audio)
+        # Start the download thread
+        download_thread = DownloadThread(video.watch_url, audio=False, download_location=self.download_location)
+        download_thread.progress.connect(progress_bar.setValue)
+        download_thread.finished.connect(lambda: self.download_complete(video.title, frame))
         download_thread.start()
+        self.download_threads.append(download_thread)
 
-    def video_downloader(self, yt, progress_var):
-        downloads_path = self.download_location.get()
-        name = yt.title
-        name = name.replace('\\', '').replace('/', '')
-        new_name = f'{name}.mp4'
+    def download_complete(self, video_title, frame):
+        progress_bar = self.current_progress_bars.get(frame)
+        if progress_bar:
+            frame.layout().removeWidget(progress_bar)
+            progress_bar.deleteLater()
 
-        def download_video():
-            yt.streams.get_highest_resolution().download(filename=new_name, output_path=downloads_path)
-            messagebox.showinfo("Download Complete", f"Downloaded: {new_name}")
+        # Show a popup notification
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.setWindowTitle("Download Complete")
+        msg_box.setText(f"Download of '{video_title}' complete.")
+        open_button = msg_box.addButton("Open", QMessageBox.ButtonRole.AcceptRole)
+        msg_box.addButton("Close", QMessageBox.ButtonRole.RejectRole)
+        msg_box.exec()
 
-        download_thread = threading.Thread(target=download_video)
-        download_thread.start()
+        if msg_box.clickedButton() == open_button:
+            download_path = Path(self.download_location) / video_title
+            open_thread = OpenFileThread(download_path)
+            open_thread.start()
+
+        download_button = QPushButton("Download")
+        download_button.setFixedWidth(100)
+        download_button.clicked.connect(lambda checked, v=None, f=frame, b=download_button: self.download_options(v, f, b))
+        frame.layout().addWidget(download_button)
+
+    def closeEvent(self, event):
+        if self.search_thread and self.search_thread.isRunning():
+            self.search_thread.terminate()
+            self.search_thread.wait()
+        
+        for thread in self.thumbnail_threads:
+            if thread.isRunning():
+                thread.terminate()
+                thread.wait()
+
+        for thread in self.download_threads:
+            if thread.isRunning():
+                thread.terminate()
+                thread.wait()
+        event.accept()
+
+class OpenFileThread(QThread):
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+
+    def run(self):
+        if os_type == "Windows":
+            os.startfile(self.file_path)
+        elif os_type == "Darwin":  # macOS
+            os.system(f'open "{self.file_path}"')
+        else:  # Linux
+            os.system(f'xdg-open "{self.file_path}"')
+
+class SearchThread(QThread):
+    results_found = pyqtSignal(object)
+
+    def __init__(self, query):
+        super().__init__()
+        self.query = query
+
+    def run(self):
+        search = Search(self.query)
+        for i, result in enumerate(search.results):
+            if i >= 10:  # Limit results to 10
+                break
+            self.results_found.emit(result)
+
+class ThumbnailThread(QThread):
+    finished = pyqtSignal(bytes)
+
+    def __init__(self, thumbnail_url):
+        super().__init__()
+        self.thumbnail_url = thumbnail_url
+
+    def run(self):
+        response = requests.get(self.thumbnail_url)
+        self.finished.emit(response.content)
+
+class DownloadThread(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal()
+
+    def __init__(self, video_url, audio, download_location):
+        super().__init__()
+        self.video_url = video_url
+        self.audio = audio
+        self.download_location = download_location
+
+    def run(self):
+        yt = YouTube(self.video_url, on_progress_callback=self.update_progress)
+        if self.audio:
+            stream = yt.streams.get_audio_only()
+        else:
+            stream = yt.streams.get_highest_resolution()
+        stream.download(output_path=self.download_location)
+        self.finished.emit()
+
+    def update_progress(self, stream, chunk, bytes_remaining):
+        total_size = stream.filesize
+        bytes_downloaded = total_size - bytes_remaining
+        percentage = (bytes_downloaded / total_size) * 100
+        self.progress.emit(int(percentage))
+
 
 if __name__ == "__main__":
-    app = YouTubeDownloader()
-    app.mainloop()
+    app = QApplication(sys.argv)
+    downloader = YouTubeDownloader()
+    downloader.show()
+    sys.exit(app.exec())
