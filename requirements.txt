@@ -1,1 +1,2 @@
-pytube==15.0.0
+pytube
+pyqt6
