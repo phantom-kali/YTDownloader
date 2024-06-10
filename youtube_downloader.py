@@ -2,7 +2,7 @@ import sys
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QScrollArea, QFileDialog, QProgressBar, QMenu,
-    QMenuBar, QMessageBox
+    QMenuBar, QMessageBox, QDialog, QRadioButton, QButtonGroup, QDialogButtonBox
 )
 from PyQt6.QtGui import QPixmap, QAction
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -12,8 +12,9 @@ import requests
 import io
 import platform
 from pathlib import Path
-import os
+import urllib.parse
 import subprocess
+import os
 
 os_type = platform.system()
 
@@ -23,7 +24,7 @@ class YouTubeDownloader(QMainWindow):
         self.setWindowTitle("YouTube Downloader")
         self.setGeometry(100, 100, 800, 600)
 
-        self.quality = "720p"
+        self.quality = "240p"
         self.theme = "Light"
         self.download_location = str(Path.home() / 'Downloads/YouTube')
 
@@ -33,7 +34,7 @@ class YouTubeDownloader(QMainWindow):
         self.search_thread = None
         self.download_threads = []
         self.thumbnail_threads = []
-        self.current_progress_bars = {}  # Dictionary to keep track of progress bars by frame
+        self.current_progress_bars = {}
 
     def initUI(self):
         central_widget = QWidget(self)
@@ -153,32 +154,54 @@ class YouTubeDownloader(QMainWindow):
         self.results_layout.addWidget(frame)
 
     def download_options(self, video, frame, download_button):
-        # Remove download button
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Download Options")
+
+        layout = QVBoxLayout(dialog)
+        audio_button = QRadioButton("Audio Only")
+        video_button = QRadioButton("Video")
+        video_button.setChecked(True)
+
+        button_group = QButtonGroup(dialog)
+        button_group.addButton(audio_button)
+        button_group.addButton(video_button)
+
+        layout.addWidget(audio_button)
+        layout.addWidget(video_button)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            download_audio = audio_button.isChecked()
+            self.start_download(video, frame, download_button, download_audio)
+
+    def start_download(self, video, frame, download_button, download_audio):
         layout = frame.layout()
         meta_layout = layout.itemAt(1).layout()
         meta_layout.removeWidget(download_button)
         download_button.deleteLater()
 
-        # Create progress bar immediately after selection
         progress_bar = QProgressBar()
         progress_bar.setValue(0)
         layout.addWidget(progress_bar)
         self.current_progress_bars[frame] = progress_bar
 
-        # Start the download thread
-        download_thread = DownloadThread(video.watch_url, audio=False, download_location=self.download_location)
+        download_thread = DownloadThread(video.watch_url, download_audio, self.download_location)
         download_thread.progress.connect(progress_bar.setValue)
-        download_thread.finished.connect(lambda: self.download_complete(video.title, frame))
+        download_thread.finished.connect(lambda: self.download_complete(video.title, frame, ".mp4" if not download_audio else ".mp3"))
         download_thread.start()
         self.download_threads.append(download_thread)
 
-    def download_complete(self, video_title, frame):
+
+    def download_complete(self, video_title, frame, extension):
         progress_bar = self.current_progress_bars.get(frame)
         if progress_bar:
             frame.layout().removeWidget(progress_bar)
             progress_bar.deleteLater()
 
-        # Show a popup notification
         msg_box = QMessageBox(self)
         msg_box.setIcon(QMessageBox.Icon.Information)
         msg_box.setWindowTitle("Download Complete")
@@ -188,7 +211,7 @@ class YouTubeDownloader(QMainWindow):
         msg_box.exec()
 
         if msg_box.clickedButton() == open_button:
-            download_path = Path(self.download_location) / video_title
+            download_path = Path(self.download_location) / (video_title + extension)
             open_thread = OpenFileThread(download_path)
             open_thread.start()
 
@@ -196,6 +219,7 @@ class YouTubeDownloader(QMainWindow):
         download_button.setFixedWidth(100)
         download_button.clicked.connect(lambda checked, v=None, f=frame, b=download_button: self.download_options(v, f, b))
         frame.layout().addWidget(download_button)
+
 
     def closeEvent(self, event):
         if self.search_thread and self.search_thread.isRunning():
@@ -219,12 +243,17 @@ class OpenFileThread(QThread):
         self.file_path = file_path
 
     def run(self):
+        if not os.path.exists(self.file_path):
+            print(f"File not found: {self.file_path}")
+            return
+
         if os_type == "Windows":
-            subprocess.Popen(['start', self.file_path], shell=True)
+            subprocess.Popen(['start', str(self.file_path)], shell=True)
         elif os_type == "Darwin":  # macOS
-            subprocess.Popen(['open', self.file_path])
+            subprocess.Popen(['open', str(self.file_path)])
         else:  # Linux
-            subprocess.Popen(['xdg-open', self.file_path])
+            subprocess.Popen(['xdg-open', str(self.file_path)])
+
 
 class SearchThread(QThread):
     results_found = pyqtSignal(object)
@@ -236,7 +265,7 @@ class SearchThread(QThread):
     def run(self):
         search = Search(self.query)
         for i, result in enumerate(search.results):
-            if i >= 10:  # Limit results to 10
+            if i >= 10:
                 break
             self.results_found.emit(result)
 
@@ -275,7 +304,6 @@ class DownloadThread(QThread):
         bytes_downloaded = total_size - bytes_remaining
         percentage = (bytes_downloaded / total_size) * 100
         self.progress.emit(int(percentage))
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
