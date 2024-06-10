@@ -13,6 +13,7 @@ import io
 import platform
 from pathlib import Path
 import os
+import subprocess
 
 os_type = platform.system()
 
@@ -219,11 +220,11 @@ class OpenFileThread(QThread):
 
     def run(self):
         if os_type == "Windows":
-            os.startfile(self.file_path)
+            subprocess.Popen(['start', self.file_path], shell=True)
         elif os_type == "Darwin":  # macOS
-            os.system(f'open "{self.file_path}"')
+            subprocess.Popen(['open', self.file_path])
         else:  # Linux
-            os.system(f'xdg-open "{self.file_path}"')
+            subprocess.Popen(['xdg-open', self.file_path])
 
 class SearchThread(QThread):
     results_found = pyqtSignal(object)
