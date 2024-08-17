@@ -1,136 +1,356 @@
-import tkinter as tk
-from tkinter import ttk, Entry, Label
-from pytube import YouTube
-from pathlib import Path
-from threading import Thread
+import sys
+import json
+import requests
+import io
 import platform
 import os
+from pathlib import Path
+from datetime import datetime, timedelta
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QScrollArea, QFileDialog, QProgressBar, QMenu,
+    QMenuBar, QMessageBox, QDialog, QRadioButton, QButtonGroup, QDialogButtonBox
+)
+from PyQt6.QtGui import QPixmap, QAction
+from PyQt6.QtCore import Qt, QRunnable, QThreadPool, QObject, pyqtSignal, pyqtSlot
+from pytube import YouTube, Search
+from PIL import Image
 
 os_type = platform.system()
 
-downloads_path = ""  # Define downloads_path as a global variable
-new_name = ""  # Define new_name as a global variable
+class Cache:
+    def __init__(self, cache_file, expiration_time=timedelta(hours=1)):
+        self.cache_file = cache_file
+        self.expiration_time = expiration_time
+        self.cache = self.load_cache()
 
-def video_downloader():
-    global downloads_path, new_name  # Use the global variables
-
-    url = link_entry.get().strip()
-
-    if not url:
-        status_label.config(text="Please enter a YouTube link.", fg="red", font=16)
-        return
-
-    downloads_path = str(Path.home() / 'Videos/YouTube')
-    video = YouTube(url)
-    name = video.title
-    name = name.replace('\\', '').replace('/', '')
-
-    new_name = f'{name}.mp4'
-
-    # Update status label before download
-    status_label.config(text="Downloading Video...", fg="green", font=16)
-
-    def download_video():
-        global downloads_path, new_name  # Use the global variables
-        video.streams.get_highest_resolution().download(filename=new_name, output_path=downloads_path)
-        status_label.config(text=f"Downloaded: {new_name}")
-        open_button.config(state=tk.NORMAL)  # Enable the open button
-
-    # Run download in a separate thread to avoid GUI freezing
-    download_thread = Thread(target=download_video)
-    download_thread.start()
-
-def audio_downloader():
-    global downloads_path, new_name  # Use the global variables
-
-    url = link_entry.get().strip()
-
-    if not url:
-        status_label.config(text="Please enter a YouTube link.", fg="red", font=16)
-        return
-
-    downloads_path = str(Path.home() / 'Music/YouTube')
-    video = YouTube(url)
-    name = video.title
-    name = name.replace('\\', '').replace('/', '')
-
-    new_name = f'{name}.mp3'
-
-    # Update status label before download
-    status_label.config(text="Downloading Audio...", fg="green", font=16)
-
-    def download_audio():
-        global downloads_path, new_name  # Use the global variables
-        video.streams.get_audio_only().download(filename=new_name, output_path=downloads_path)
-        status_label.config(text=f"Downloaded: {new_name}")
-        open_button.config(state=tk.NORMAL)  # Enable the open button
-
-    # Run download in a separate thread to avoid GUI freezing
-    download_thread = Thread(target=download_audio)
-    download_thread.start()
-
-def open_file():
-    global downloads_path, new_name  # Use the global variables
-
-    if not downloads_path or not new_name:
-        status_label.config(text="No file has been downloaded yet.", fg="red", font=16)
-        return
-
-    # Get the path of the downloaded file
-    file_path = os.path.join(downloads_path, new_name)
-
-    # Open the file using the default system application
-    if os_type.lower() == "linux":
-        try:    
-            os.system(f"xdg-open '{file_path}'")
-        except:
-            pass
-    elif os_type.lower() == "windows":
+    def load_cache(self):
         try:
-            os.system(f"start '{file_path}'")
-        except:
-            pass
+            with open(self.cache_file, 'r') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
 
-# GUI setup
-root = tk.Tk()
-root.title("YouTube Downloader")
-root.resizable(False, False)  # Set resizable to False
+    def save_cache(self):
+        with open(self.cache_file, 'w') as f:
+            json.dump(self.cache, f)
 
-# Set dark background color for the window
-root.configure(bg="#333333")
+    def get(self, key):
+        if key in self.cache:
+            timestamp, value = self.cache[key]
+            if datetime.now() - datetime.fromisoformat(timestamp) < self.expiration_time:
+                return value
+        return None
 
-# Create a ttk style for rounded buttons with dark colors
-style = ttk.Style()
-style.configure("Rounded.TButton",
-                borderwidth=1,
-                relief="flat",
-                foreground="white",
-                background="#00008B",  # Dark blue color
-                font=('Helvetica', 10, 'bold'),
-                highlightbackground="#00004B",  # Adjust this to a darker shade
-                highlightcolor="#00004B")  # Adjust this to a darker shade
+    def set(self, key, value):
+        self.cache[key] = (datetime.now().isoformat(), value)
+        self.save_cache()
 
-# Link Entry
-link_label = Label(root, text="Enter YouTube Link:", bg="#333333", fg="white")
-link_label.pack(pady=5)
+class WorkerSignals(QObject):
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    result = pyqtSignal(object)
+    progress = pyqtSignal(int)
 
-link_entry = Entry(root, width=50, font=('Helvetica', 10), borderwidth=5, relief="groove")
-link_entry.pack(pady=5)
+class SearchWorker(QRunnable):
+    def __init__(self, query, cache):
+        super().__init__()
+        self.query = query
+        self.cache = cache
+        self.signals = WorkerSignals()
 
-# Video Download Button
-video_button = ttk.Button(root, text="Download Video", command=video_downloader, style="Rounded.TButton")
-video_button.pack(pady=10)
+    @pyqtSlot()
+    def run(self):
+        try:
+            cached_results = self.cache.get(self.query)
+            if cached_results:
+                for result in cached_results:
+                    self.signals.result.emit(result)
+            else:
+                search = Search(self.query)
+                results = []
+                for i, result in enumerate(search.results):
+                    if i >= 10:
+                        break
+                    results.append(result)
+                    self.signals.result.emit(result)
+                self.cache.set(self.query, results)
+            self.signals.finished.emit()
+        except Exception as e:
+            self.signals.error.emit(str(e))
 
-# Audio Download Button
-audio_button = ttk.Button(root, text="Download Audio", command=audio_downloader, style="Rounded.TButton")
-audio_button.pack(pady=10)
+class ThumbnailWorker(QRunnable):
+    def __init__(self, thumbnail_url, cache):
+        super().__init__()
+        self.thumbnail_url = thumbnail_url
+        self.cache = cache
+        self.signals = WorkerSignals()
 
-# Open Button
-open_button = ttk.Button(root, text="Open Downloaded File", command=open_file, state=tk.DISABLED, style="Rounded.TButton")
-open_button.pack(pady=10)
+    @pyqtSlot()
+    def run(self):
+        try:
+            cached_thumbnail = self.cache.get(self.thumbnail_url)
+            if cached_thumbnail:
+                self.signals.result.emit(cached_thumbnail)
+            else:
+                response = requests.get(self.thumbnail_url)
+                self.cache.set(self.thumbnail_url, response.content)
+                self.signals.result.emit(response.content)
+            self.signals.finished.emit()
+        except Exception as e:
+            self.signals.error.emit(str(e))
 
-# Status Label
-status_label = Label(root, text="", bg="#333333", fg="white")
-status_label.pack(pady=10)
+class DownloadWorker(QRunnable):
+    def __init__(self, video_url, audio_only, download_location):
+        super().__init__()
+        self.video_url = video_url
+        self.audio_only = audio_only
+        self.download_location = download_location
+        self.signals = WorkerSignals()
 
-root.mainloop()
+    @pyqtSlot()
+    def run(self):
+        try:
+            yt = YouTube(self.video_url, on_progress_callback=self.update_progress)
+            if self.audio_only:
+                stream = yt.streams.get_audio_only()
+            else:
+                stream = yt.streams.get_highest_resolution()
+            stream.download(output_path=self.download_location)
+            self.signals.finished.emit()
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
+    def update_progress(self, stream, chunk, bytes_remaining):
+        total_size = stream.filesize
+        bytes_downloaded = total_size - bytes_remaining
+        percentage = (bytes_downloaded / total_size) * 100
+        self.signals.progress.emit(int(percentage))
+
+class YouTubeDownloader(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("YouTube Downloader")
+        self.setGeometry(100, 100, 800, 600)
+
+        self.quality = "240p"
+        self.theme = "Light"
+        self.download_location = str(Path.home() / 'Downloads/YouTube')
+
+        self.search_cache = Cache('search_cache.json')
+        self.thumbnail_cache = Cache('thumbnail_cache.json')
+
+        self.initUI()
+        self.create_menu()
+
+        self.current_progress_bars = {}
+
+    def initUI(self):
+        central_widget = QWidget(self)
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+
+        search_layout = QHBoxLayout()
+        self.search_bar = QLineEdit(self)
+        self.search_bar.setPlaceholderText("Search YouTube")
+        self.search_bar.returnPressed.connect(self.search_videos)
+        search_layout.addWidget(self.search_bar)
+
+        self.search_button = QPushButton("Search", self)
+        self.search_button.clicked.connect(self.search_videos)
+        search_layout.addWidget(self.search_button)
+        layout.addLayout(search_layout)
+
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.results_widget = QWidget()
+        self.results_layout = QVBoxLayout(self.results_widget)
+        self.scroll_area.setWidget(self.results_widget)
+        layout.addWidget(self.scroll_area)
+
+    def create_menu(self):
+        menu_bar = self.menuBar()
+        settings_menu = menu_bar.addMenu("Settings")
+
+        theme_menu = QMenu("Theme", self)
+        light_action = QAction("Light", self)
+        dark_action = QAction("Dark", self)
+        light_action.triggered.connect(lambda: self.change_theme("Light"))
+        dark_action.triggered.connect(lambda: self.change_theme("Dark"))
+        theme_menu.addAction(light_action)
+        theme_menu.addAction(dark_action)
+
+        quality_menu = QMenu("Video Quality", self)
+        qualities = ["1080p", "720p", "480p", "360p", "240p"]
+        for quality in qualities:
+            action = QAction(quality, self)
+            action.triggered.connect(lambda checked, q=quality: self.set_quality(q))
+            quality_menu.addAction(action)
+
+        download_location_action = QAction("Set Download Location", self)
+        download_location_action.triggered.connect(self.set_download_location)
+
+        settings_menu.addMenu(theme_menu)
+        settings_menu.addMenu(quality_menu)
+        settings_menu.addAction(download_location_action)
+
+    def change_theme(self, theme):
+        self.theme = theme
+        if theme == "Dark":
+            self.setStyleSheet("background-color: #1e1e1e; color: #ffffff;")
+        else:
+            self.setStyleSheet("")
+
+    def set_quality(self, quality):
+        self.quality = quality
+
+    def set_download_location(self):
+        directory = QFileDialog.getExistingDirectory(self, "Select Download Location")
+        if directory:
+            self.download_location = directory
+
+    def search_videos(self):
+        query = self.search_bar.text()
+        if not query:
+            self.show_error("Please enter a search query.")
+            return
+
+        self.search_button.setText("Loading...")
+        self.search_button.setEnabled(False)
+        self.results_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        worker = SearchWorker(query, self.search_cache)
+        worker.signals.result.connect(self.display_result)
+        worker.signals.finished.connect(lambda: self.search_button.setText("Search"))
+        worker.signals.finished.connect(lambda: self.search_button.setEnabled(True))
+        worker.signals.error.connect(self.show_error)
+
+        QThreadPool.globalInstance().start(worker)
+
+    def display_result(self, video):
+        frame = QWidget()
+        layout = QHBoxLayout(frame)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        
+        worker = ThumbnailWorker(video.thumbnail_url, self.thumbnail_cache)
+        worker.signals.result.connect(lambda img_data, f=frame, v=video: self.add_video_frame(img_data, f, v))
+        worker.signals.error.connect(self.show_error)
+        QThreadPool.globalInstance().start(worker)
+
+    def add_video_frame(self, img_data, frame, video):
+        img = Image.open(io.BytesIO(img_data))
+        img = img.resize((120, 90), Image.Resampling.LANCZOS)
+        img_byte_arr = io.BytesIO()
+        img.save(img_byte_arr, format='PNG')
+        pixmap = QPixmap()
+        pixmap.loadFromData(img_byte_arr.getvalue())
+
+        thumbnail_label = QLabel()
+        thumbnail_label.setPixmap(pixmap)
+        layout = frame.layout()
+        layout.addWidget(thumbnail_label)
+
+        meta_layout = QVBoxLayout()
+        title_label = QLabel(video.title)
+        title_label.setWordWrap(True)
+        meta_layout.addWidget(title_label)
+        meta_layout.setSpacing(10)
+
+        download_button = QPushButton("Download")
+        download_button.setFixedWidth(100)
+        download_button.clicked.connect(lambda checked, v=video, f=frame, b=download_button: self.download_options(v, f, b))
+        meta_layout.addWidget(download_button)
+
+        layout.addLayout(meta_layout)
+        self.results_layout.addWidget(frame)
+
+    def download_options(self, video, frame, download_button):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Download Options")
+
+        layout = QVBoxLayout(dialog)
+        audio_button = QRadioButton("Audio Only")
+        video_button = QRadioButton("Video")
+        video_button.setChecked(True)
+
+        button_group = QButtonGroup(dialog)
+        button_group.addButton(audio_button)
+        button_group.addButton(video_button)
+
+        layout.addWidget(audio_button)
+        layout.addWidget(video_button)
+
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            download_audio = audio_button.isChecked()
+            self.start_download(video, frame, download_button, download_audio)
+
+    def start_download(self, video, frame, download_button, download_audio):
+        layout = frame.layout()
+        meta_layout = layout.itemAt(1).layout()
+        meta_layout.removeWidget(download_button)
+        download_button.deleteLater()
+
+        progress_bar = QProgressBar()
+        progress_bar.setValue(0)
+        layout.addWidget(progress_bar)
+        self.current_progress_bars[frame] = progress_bar
+
+        worker = DownloadWorker(video.watch_url, download_audio, self.download_location)
+        worker.signals.progress.connect(progress_bar.setValue)
+        worker.signals.finished.connect(lambda: self.download_complete(video.title, frame, ".mp4" if not download_audio else ".mp3"))
+        worker.signals.error.connect(self.show_error)
+        QThreadPool.globalInstance().start(worker)
+
+    def download_complete(self, video_title, frame, extension):
+        progress_bar = self.current_progress_bars.get(frame)
+        if progress_bar:
+            frame.layout().removeWidget(progress_bar)
+            progress_bar.deleteLater()
+
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.setWindowTitle("Download Complete")
+        msg_box.setText(f"Download of '{video_title}' complete.")
+        open_button = msg_box.addButton("Open", QMessageBox.ButtonRole.AcceptRole)
+        msg_box.addButton("Close", QMessageBox.ButtonRole.RejectRole)
+        msg_box.exec()
+
+        if msg_box.clickedButton() == open_button:
+            download_path = Path(self.download_location) / (video_title + extension)
+            self.open_file(download_path)
+
+        download_button = QPushButton("Download")
+        download_button.setFixedWidth(100)
+        download_button.clicked.connect(lambda checked, v=None, f=frame, b=download_button: self.download_options(v, f, b))
+        frame.layout().addWidget(download_button)
+
+    def open_file(self, file_path):
+        if not os.path.exists(file_path):
+            self.show_error(f"File not found: {file_path}")
+            return
+
+        if os_type == "Windows":
+            os.startfile(str(file_path))
+        elif os_type == "Darwin":  # macOS
+            os.system(f"open {str(file_path)}")
+        else:  # Linux
+            os.system(f"xdg-open {str(file_path)}")
+
+    def show_error(self, message):
+        error_box = QMessageBox(self)
+        error_box.setIcon(QMessageBox.Icon.Critical)
+        error_box.setText("Error")
+        error_box.setInformativeText(message)
+        error_box.setWindowTitle("Error")
+        error_box.exec()
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    downloader = YouTubeDownloader()
+    downloader.show()
+    sys.exit(app.exec())
